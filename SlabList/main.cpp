@@ -1,5 +1,7 @@
 #include <iostream>
 #include "slab_hash.hpp"
+#include <random>
+#include <map>
 
 #define ASSERT(condition, name) \
             if(!(condition)) { \
@@ -10,6 +12,8 @@
 
 
 int main() {
+    srand(time(NULL));
+    std::map<int, int> m;
     sycl::queue q {sycl::gpu_selector() } ;
     std::cout << q.get_device().get_info<sycl::info::device::name>() << '\n';
     std::cout << "Subgroup sizes - ";
@@ -17,19 +21,28 @@ int main() {
         std::cout << e << ' ';
     }
     std::cout << "\n-------------\n\n";
-    
 
-    slab_list<int> l(-1, q);
+    slab_list<int, int> l(-1, q);
+    int check;
 
-    for (int i = 0; i < WARP_SIZE * CONST * 4; i++) {
-        l.push_back(i % (WARP_SIZE * CONST));
+    for (int i = 0; i < WARP_SIZE * CONST * 2048; i++) {
+        int ind = rand() % 30000;
+        int val = rand() % 1000000;
+
+        if(m.find(ind) != m.end()) continue;
+
+        m[ind] = val;
+        l.add(ind, val);
+
+        if (i == 33 || i == 55 || i == 101 || i == 302) {
+            check = ind;
+        }
     }
 
-    ASSERT(l[5] == l[165], "1");
-    ASSERT(l[167] == 7, "2");
+    auto p = l.find(check);
 
-    l.remove(5);
-    ASSERT(l[5] != l[165] && l[5] == -1, "3");
+    int ans = m[check];
 
-    ASSERT(l.find(5) == 165, "4");
+
+    std::cout << (ans == p.first);
 }
