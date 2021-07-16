@@ -5,40 +5,43 @@
 #include <CL/sycl.hpp>
 
 #define WARP_SIZE 32
-#define CONST 5
+#define CONST 1
+#define CLUSTER_SIZE 1024
 
-bool always_true();
+using std::pair;
 
-template <typename T>
+template <typename K, typename T>
 class slab_list {
 public:
-    slab_list(T em, sycl::queue &q);
+    slab_list(K em, sycl::queue &q);
     ~slab_list();
 
-    void push_back(T el);
-    void remove(int ind);
-    int find(T el);
-    T &get(int ind);
-
-    T &operator[](int ind);
+    void add(K key, T el);
+    pair<T, bool> find(const K& key);
 private:
     struct slab_node {
         slab_node() = default;
-        slab_node(T em);
-        int first_empty();
+        void set_slab_node(K em);
 
-        T data[WARP_SIZE * CONST];
+        pair<K, T> data[WARP_SIZE * CONST];
         slab_node *next = NULL;
-        T empty;
+        K empty;
     };
 
+    void add_bucket();
     void clear_rec(slab_node *node);
 
+    slab_node* cluster;
+
     slab_node *root;
-    T empty;
+    K empty;
+    size_t num_of_buckets = 1;
     sycl::queue q_;
 };
 
+#include "slab_hash_impl.hpp"
+
+#endif
 #include "slab_hash_impl.hpp"
 
 #endif
