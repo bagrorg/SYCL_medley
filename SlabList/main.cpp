@@ -23,14 +23,25 @@ int main() {
     }
     std::cout << "\n-------------\n\n";
 
-    sycl::nd_range r = sycl::nd_range(sycl::range {8}, sycl::range {8});
+    sycl::nd_range<1> r = sycl::nd_range<1>(sycl::range<1> {8}, sycl::range<1> {8});
 
-   
+    /*int *a = sycl::malloc_shared<int>(1, q);
+    int *expec = sycl::malloc_shared<int>(1, q);
+    int *value = sycl::malloc_shared<int>(1, q);
+    bool *flag = sycl::malloc_shared<bool>(1, q);
+    *a = 33;
+    *expec = 33;
+    *value = 44;
+
     auto e =     q.parallel_for(r, [=] (sycl::nd_item<1> it) {
-           // out << ' ' << ' ' << it.get_global_id() << ' ' << it.get_group().get_id() << ' ' << it.get_sub_group().get_group_id() << ' ' << it.get_sub_group().get_local_range() << '\n';
-        });
-    e.wait();
+        *flag = sycl::ONEAPI::atomic_ref<int, sycl::ONEAPI::memory_order::acq_rel,
+                                 sycl::ONEAPI::memory_scope::system, 
+                                 sycl::access::address_space::global_space>(*a).compare_exchange_strong(*expec, *value);
 
+    });
+    e.wait();
+    std::cout << *a << '\n';
+    std::cout << *flag << '\n';*/
 
 
     slab_list<int, int> l(-1, q);
@@ -136,6 +147,6 @@ int main() {
     ASSERT(l.find(0).first == 13, "zero check");
     ASSERT(l.find(0).second, "check zero second ar");
     ASSERT(l.find(23).first == 101, "23");
-    ASSERT(l.find(222).first == 11, "two buckets test")
+    ASSERT(l.find(222).first == 11, "two buckets test");
     
 }
