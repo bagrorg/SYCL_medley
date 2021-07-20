@@ -5,7 +5,7 @@
 #include <CL/sycl.hpp>
 
 #define WARP_SIZE 8
-#define CONST 5
+#define CONST 1
 #define CLUSTER_SIZE 1024
 
 using std::pair;
@@ -21,7 +21,7 @@ public:
 private:
     struct slab_node {
         slab_node() = default;                          //TODO convert set slab node to constructor
-        void set_slab_node(K em);
+        slab_node(K em);
 
         pair<K, T> data[WARP_SIZE * CONST];
         slab_node *next = NULL;
