@@ -3,14 +3,17 @@
 
 
 #include "slab_hash.hpp"
-#include <CL/sycl/atomic.hpp>
+#include <strings.h>
 
 template <typename K, typename T>
 slab_list<K, T>::slab_list(K em, sycl::queue &q) : empty(em), q_(q) {
     cluster = sycl::malloc_shared<slab_node>(CLUSTER_SIZE, q_);
-    cluster[0] = slab_node();
+    //std::cout << empty << std::endl;
+    for(int i = 0; i < CLUSTER_SIZE; i++) {
+        cluster[i] = slab_node(empty);
+    }
+
     root = &cluster[0];
-    root->set_slab_node(em);
 }
 
 template <typename K, typename T>
@@ -26,28 +29,110 @@ void slab_list<K, T>::clear_rec(slab_node *node) {
 
 template <typename K, typename T>
 void slab_list<K, T>::add(K key, T el) {
-    auto iter = cluster;
+    sycl::nd_range<1> r { WARP_SIZE, WARP_SIZE};
+    auto iter = &cluster[0];                                                           //TODO если нет проблем с захватом то исправить
+    slab_node* prev = NULL;
+    //std::cout << "HERE" << std::endl;
 
-    while (iter != NULL) {
-        for (int i = 0; i < WARP_SIZE * CONST; i++) {
-            if (iter->data[i].first == empty) {
-                iter->data[i] = {key, el};
-                return;
-            }
-        }
-        if (iter->next == NULL) break;
-        iter = iter->next;
+    {
+        auto buffIter = sycl::buffer(&iter, sycl::range(1));
+        auto buffNumOfBuck = sycl::buffer(&num_of_buckets, sycl::range(1));
+        auto buffer_em = sycl::buffer(&empty, sycl::range(1));
+        auto buffKey = sycl::buffer(&key, sycl::range(1));
+        auto buffEl = sycl::buffer(&el, sycl::range(1));
+        auto buffPrev = sycl::buffer(&prev, sycl::range(1));
+        auto buffClust = sycl::buffer(&cluster, sycl::range(1));
+
+      //std::cout << "HERE" << std::endl;
+
+        q_.submit([&](sycl::handler &cgh) {
+            sycl::stream out(10000, 100, cgh);
+
+            auto accIter = sycl::accessor{buffIter, cgh, sycl::read_write};
+            auto accEm = sycl::accessor{buffer_em, cgh, sycl::read_write};
+            auto accKey = sycl::accessor{buffKey, cgh, sycl::read_only};
+            auto accEl = sycl::accessor{buffEl, cgh, sycl::read_only};
+            auto accPrev = sycl::accessor{buffPrev, cgh, sycl::read_write};
+            auto accClust = sycl::accessor{buffClust, cgh, sycl::read_write};
+            auto accNumOfBuck = sycl::accessor{buffNumOfBuck, cgh, sycl::read_write};
+
+            //std::cout << "HERE" << std::endl;
+            
+
+            cgh.parallel_for(r, [=](sycl::nd_item<1> it) {
+                auto ind = it.get_local_id();
+                auto sg = it.get_sub_group();
+                bool total_found = false;
+                bool find = false;
+
+                while(1) {
+                    while ((*accIter.get_pointer()) != NULL) {
+                        for(int i = ind; i <= ind + WARP_SIZE * (CONST - 1); i += WARP_SIZE) {
+                            find = (((*accIter.get_pointer())->data[i].first) == *(accEm.get_pointer()));
+                            //out << ind << ' ' << find << ' ' << *(accEm.get_pointer()) << ' ' << ((*accIter.get_pointer())->data[i].first) << sycl::endl;
+                            //waiting for all items
+                            sg.barrier();
+                            total_found = sycl::any_of_group(sg, find);
+                            //out << ind << ' ' << total_found << sycl::endl;
+                            
+                            //If some item found something
+                            if (total_found) {
+                                total_found = false;
+                                //Searching first item with find == 1                                                           TODO
+                                for (int j = 0; j < WARP_SIZE; j++) {
+                                    //if item j has find == 1
+                                    if (sycl::group_broadcast(sg, find, j)) {
+                                        //item j sets it to ans
+                                        //out << j << sycl::endl;
+                                        bool done = ind == j ? sycl::ONEAPI::atomic_ref<K, sycl::ONEAPI::memory_order::acq_rel,
+                                                                    sycl::ONEAPI::memory_scope::system,
+                                                                    sycl::access::address_space::global_space>(
+                                                                        ((*accIter.get_pointer())->data[i].first)
+                                                                    ).compare_exchange_strong(*accEm.get_pointer(),
+                                                                                                *accKey.get_pointer()) : false;
+                                        if (done) {
+                                            //out << "S - " << ind << sycl::endl;
+                                            (*accIter.get_pointer())->data[i].second = *accEl.get_pointer();
+                                        }
+                                        if (sycl::group_broadcast(sg, done, j)) {
+                                            //out << ind << "here" << sycl::endl;
+                                            total_found = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                //breaking that job is done
+                                if (total_found) break;
+                            }
+                        }
+                        if (total_found) break;
+                        //0st item jumping to another node
+                        if (ind == 0) {
+                            (*accPrev.get_pointer()) = (*accIter.get_pointer());
+                            (*accIter.get_pointer()) = (*accIter.get_pointer())->next;
+                        }
+                        //waiting for 0st item jump and all others
+                        sg.barrier();
+                    }
+                    if (total_found) break;
+                    else {
+                        //out << ind << sycl::endl;
+                        if (ind == 0) {
+                            
+                            (*accPrev.get_pointer())->next = &(*accClust.get_pointer())[*accNumOfBuck.get_pointer()];
+                            (*accIter.get_pointer()) = (*accPrev.get_pointer())->next;
+                            *accNumOfBuck.get_pointer() += 1;
+                        }
+                        //out << *accIter.get_pointer() << sycl::endl;
+                        sg.barrier();
+                    }
+                    
+                }
+            });
+
+            q_.wait();
+        });
     }
-    
-    if (num_of_buckets == CLUSTER_SIZE) return;
-
-    cluster[num_of_buckets] = slab_node();
-    cluster[num_of_buckets].set_slab_node(empty);
-
-    iter->next = &cluster[num_of_buckets];
-    num_of_buckets++;
-
-    iter->next->data[0] = {key, el};
 }
 
 
@@ -129,9 +214,10 @@ pair<T, bool> slab_list<K, T>::find(const K& key) {
 
 
 template <typename K, typename T>
-void slab_list<K, T>::slab_node::set_slab_node(K em) {
+slab_list<K, T>::slab_node::slab_node(K em) {
     for (int i = 0; i < WARP_SIZE * CONST; i++) {
         data[i].first = em;
+        data[i].second = T();
     }
 }
 
