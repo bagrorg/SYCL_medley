@@ -58,145 +58,139 @@ public:
     SlabHash() = default;
     SlabHash(K empty, Hash hasher, 
             sycl::global_ptr<SlabList<pair<K, T>>> lists,
-            sycl::nd_item<1> & it, sycl::global_ptr<SlabNode<pair<K, T>>> &iter, const sycl::stream &out) : _lists(lists), _gr(it.get_group()), _it(it), 
-                                                                                  _empty(empty), _hasher(hasher), _iter(iter), _out(out) { };
+            sycl::nd_item<1> & it, 
+            sycl::global_ptr<SlabNode<pair<K, T>>> &iter, 
+            const sycl::stream &out) : _lists(lists), _gr(it.get_group()), _it(it), 
+                                       _empty(empty), _hasher(hasher), _iter(iter), 
+                                       _out(out), _ind(_it.get_local_id()) { };
 
     void insert(K key, T val) {
-        auto ind = _it.get_local_id();
-        //_out << ind << sycl::endl;
-        
-        bool total_found = false;
-        bool find = false;
+        _key = key;
+        _val = val;
 
-        if (ind == 0) _iter = (_lists + _hasher(key))->root;
-
+        if (_ind == 0) {
+            _iter = (_lists + _hasher(key))->root;
+        }
         sycl::group_barrier(_gr);
 
-        //_out << "Group - " << _it.get_group().get_id() <<
-                //" - index - " << _it.get_local_id() << " - iter - " << key << ' ' << val << sycl::endl;
-
         while (_iter != nullptr) {
-            //_out << ind << sycl::endl;
-            for(int i = ind; i <= ind + SUBGROUP_SIZE * (CONST - 1); i += SUBGROUP_SIZE) {
-                find = ((_iter->data[i].first) == _empty);
-                //_out << "GR - " << _gr.get_id() << " ind " << ind << " " << find << sycl::endl;
-                //waiting for all items
-                //if(key == 10) _out << "FIND - " << key << ' ' <<  ind << ' ' << find << sycl::endl;
-                //if (key == 10 && !find) _out << "ELEM - " << key << ' ' << ind << ' ' << (_iter->data[i].first) << ' ' << _empty << sycl::endl;
-                sycl::group_barrier(_gr);
-                total_found = sycl::any_of_group(_gr, find);
-                //out << ind << ' ' << total_found << sycl::endl;
-                //if(key == 10) _out << "TOTAL - " << key << ' ' <<  ind << ' ' << total_found << sycl::endl;
-                //If some item found something
-                if (total_found) {
-                    //if (ind == 0) _out << _gr.get_id() << sycl::endl;
-                    total_found = false;
-                    //Searching first item with find == 1                                                           TODO
-                    for (int j = 0; j < SUBGROUP_SIZE; j++) {
-                        //if item j has find == 1
-                        if (sycl::group_broadcast(_gr, find, j)) {
-                            //item j sets it to ans
-                            K tmp_empty = _empty;
-                            //if(key == 10) _out << "TRY - " << key << ' ' <<  j << sycl::endl;
-
-                            bool done = ind == j ? sycl::ONEAPI::atomic_ref<K, sycl::ONEAPI::memory_order::acq_rel,
-                                                        sycl::ONEAPI::memory_scope::system,
-                                                        sycl::access::address_space::global_space>(
-                                                            _iter->data[i].first
-                                                        ).compare_exchange_strong(tmp_empty,
-                                                                                    key) : false;
-                            //if (key == 10) _out << "POSSIBLE SOOQA - " << _empty << ' ' << _iter->data[i].first << ' ' << sycl::endl;
-                            if (done) {
-                                //out << "S - " << ind << sycl::endl;
-                                //_out << "GR - " << _gr.get_id() << ", ind -" << ind << ' ' << key << sycl::endl;
-                                _iter->data[i].second = val;
-                            }
-                            if (sycl::group_broadcast(_gr, done, j)) {
-                                //out << ind << "here" << sycl::endl;
-                                total_found = true;
-                                break;
-                            }
-                        }
-                    }
-                    //breaking that job is done
-                    if (total_found) break;
-                }
-            }
-            if (total_found) {
+            if (insert_in_node()) {
                 break;
-            }
-            //0st item jumping to another node
-            //if(key == 10)_out << "PREGO - " << key << ' ' << ind << sycl::endl;
-            if (ind == 0) {
-                if(key == 10)_out << "GO - " << key << sycl::endl;
+            } else if (_ind == 0) {
                 _iter = _iter->next;
             }
-            //if(key == 10)_out << "NOW - " << key << ' ' << ind << ' ' << _iter << sycl::endl;
-            //waiting for 0st item jump and all others
+
             sycl::group_barrier(_gr);
         }
     }
 
     pair<T, bool> find(K key) {
-        pair<T, bool> ans = {T(), false};
-        //Index inside work-group (we have only one wg so it is equals to global id)
-        auto ind = _it.get_local_id();
+        _key = key;
+        _ans = {T(), false};
         
-        if (ind == 0) _iter = (_lists + _hasher(key))->root;
-
-        //Flags
-        bool find = false;          //Item found element with key similar to accKey
-        bool total_found = false;   //Any of item found something
+        if (_ind == 0) {
+            _iter = (_lists + _hasher(key))->root;
+        }
+        sycl::group_barrier(_gr);
 
         while (_iter != nullptr) {
-            //                         FOR LOOP EXPLANATION
-            //[. . . . . . . |. . . . . . . |. . . . . . . |. . . . . . . |...]
-            //   ^          W_S                ^
-            //   |                             |
-            //Locally : ind                Locally : ind
-            //Globally : ind        Globally : ind + WARP_SIZE * 2
-            for(int i = ind; i <= ind + SUBGROUP_SIZE * (CONST - 1); i += SUBGROUP_SIZE) {
-                find = ((_iter->data[i].first) == key);
-                //waiting for all items
-                sycl::group_barrier(_gr);
-                total_found = sycl::any_of_group(_gr, find);
-                
-                //If some item found something
-                if (total_found) {
-                    //Searching first item with find == 1                                                           TODO
-                    for (int j = 0; j < SUBGROUP_SIZE; j++) {
-                        //if item j has find == 1
-                        if (sycl::group_broadcast(_gr, find, j)) {
-                            //item j sets it to ans
-                            T tmp;
-                            if (ind == j) tmp = _iter->data[i].second;
-
-                            ans = {sycl::group_broadcast(_gr, tmp, j), true};
-                            //all items breaking
-                            break;
-                        }
-                    }
-                    //breaking that job is done
-                    break;
-                }
+            if (find_in_node()) {
+                break;
+            } else if (_ind == 0) {
+                _iter = _iter->next;
             }
-            if (total_found) break;
-            //0st item jumping to another node
-            if (ind == 0) _iter = _iter->next;
-            //waiting for 0st item jump and all others
+
             sycl::group_barrier(_gr);
         }
 
-        return ans;
+        return _ans;
     }
 
 private:
+    bool insert_in_node() {
+        bool total_found = false;
+        bool find = false;
+
+        for(int i = _ind; i <= _ind + SUBGROUP_SIZE * (CONST - 1); i += SUBGROUP_SIZE) {
+            find = ((_iter->data[i].first) == _empty);
+            sycl::group_barrier(_gr);
+            total_found = sycl::any_of_group(_gr, find);
+
+            if (total_found) {
+                if (insert_in_subgroup(find, i)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    bool insert_in_subgroup(bool find, int i) {
+        for (int j = 0; j < SUBGROUP_SIZE; j++) {
+            if (sycl::group_broadcast(_gr, find, j)) {
+                K tmp_empty = _empty;
+                bool done = _ind == j ? sycl::ONEAPI::atomic_ref<K, sycl::ONEAPI::memory_order::acq_rel,
+                                            sycl::ONEAPI::memory_scope::system,
+                                            sycl::access::address_space::global_space>(
+                                                _iter->data[i].first
+                                            ).compare_exchange_strong(tmp_empty,
+                                                                        _key) : false;
+                if (done) {
+                    _iter->data[i].second = _val;
+                }
+                if (sycl::group_broadcast(_gr, done, j)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    bool find_in_node() {
+        bool find = false;
+        bool total_found = false;
+
+        for(int i = _ind; i <= _ind + SUBGROUP_SIZE * (CONST - 1); i += SUBGROUP_SIZE) {
+            find = ((_iter->data[i].first) == _key);
+            sycl::group_barrier(_gr);
+            total_found = sycl::any_of_group(_gr, find);
+            
+    
+            if (total_found) {
+                find_in_subgroup(find, i);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    void find_in_subgroup(bool find, int i) {
+        for (int j = 0; j < SUBGROUP_SIZE; j++) {
+            if (sycl::group_broadcast(_gr, find, j)) {
+                T tmp;
+                if (_ind == j) tmp = _iter->data[i].second;                          //todo index shuffle
+
+                _ans = {sycl::group_broadcast(_gr, tmp, j), true};
+                break;
+            }
+        }
+    }
+
     sycl::global_ptr<SlabList<pair<K, T>>> _lists;
     sycl::global_ptr<SlabNode<pair<K, T>>> &_iter;
     const sycl::stream &_out;
     sycl::group<1> _gr;
     sycl::nd_item<1> &_it;
+    size_t _ind;
 
     K _empty;
     Hash _hasher;
+
+    K _key;
+    T _val;
+
+    pair<T, bool> _ans;
 };
