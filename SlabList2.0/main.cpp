@@ -1,102 +1,68 @@
 #include <CL/sycl.hpp>
-#include "slab_hash.hpp"
+#include "SlabHash/slab_hash.hpp"
+
+
+#define WORKSIZE 10000
 
 int main() {
-    auto hn = [] (sycl::exception_list el) {
-        for (auto &e: el) {
-            try{std::rethrow_exception(e);}
-            catch(sycl::exception &e) {
-                std::cout << "ASYNC EX\n";
-                std::cout << e.what() << '\n';
-            }
-        }
-    };
-
-    sycl::queue q{ sycl::gpu_selector(), hn };
-    std::cout << q.get_device().get_info<sycl::info::device::name>() << '\n';
-    std::cout << "Subgroup sizes - ";
-    for(auto e: q.get_device().get_info<sycl::info::device::sub_group_sizes>()) {
-        std::cout << e << ' ';
-    }
-    std::cout << "\n-------------\n\n";
-
-    sycl::nd_range<1> r{SUBGROUP_SIZE * 1024, SUBGROUP_SIZE};
+    sycl::queue q{ sycl::gpu_selector() };
+    sycl::nd_range<1> r{SUBGROUP_SIZE * 3, SUBGROUP_SIZE};
 
     std::vector<SlabList<pair<uint32_t, uint32_t>>> lists(BUCKETS_COUNT);
     for(auto &e: lists) {
         e = SlabList<pair<uint32_t, uint32_t>>(q, {EMPTY_UINT32_T, 0});
     }
 
+    std::vector<pair<uint32_t, uint32_t>> testUniv = { {1, 2},
+                                                       {5, 2},
+                                                       {101, 3},
+                                                       {10932, 5},
+                                                       {3, 0},
+                                                       {10, 10} };
     
+    Hasher<13, 24, 343> h;
 
+    for(auto &e: testUniv) {
+        auto r = lists[h(e.first)].root;
 
-    {
-        sycl::buffer<SlabList<pair<uint32_t, uint32_t>>> ls(lists);
-        sycl::buffer<sycl::global_ptr<SlabNode<pair<uint32_t, uint32_t>>>> its(1024);
-
-        q.submit([&](sycl::handler &cgh) {
-            auto l = sycl::accessor(ls, cgh, sycl::read_write);
-            auto itrs = sycl::accessor(its, cgh, sycl::read_write);
-            sycl::stream out(10000000, 10000, cgh);
-
-            cgh.parallel_for(r, [=](sycl::nd_item<1> it) {
-                //sycl::global_ptr<SlabNode<pair<uint32_t, uint32_t>>> iter;
-                //out << it.get_group(). << ' ' << it.get_sub_group().get_local_id() << ' ' << it.get_local_id() << sycl::endl;
-                //if( it.get_global_id() == 5) out << it.get_group().get_id() << ' ' << it.get_local_id() << sycl::endl;
-                    Hasher<13, 24, 79> h;
-                    SlabHash<uint32_t, uint32_t, Hasher<13, 24, 79>> ht(EMPTY_UINT32_T, h, l.get_pointer(), it, itrs[it.get_group().get_id()], out);
-
-                    ht.insert(it.get_group().get_id(), 12);
-            });
-                
-            q.wait();
-                //out << gr_ind << sycl::endl;
-        }).wait();
-
+        for(int i = 0; i < SLAB_SIZE; i++) {
+            if (r->data[i].first == EMPTY_UINT32_T) {
+                r->data[i] = e;
+                break;
+            }
+        }
     }
-
+    std::vector<pair<bool, bool>> checks(6);
     {
-        //sycl::buffer<bool> ok(1);
         sycl::buffer<SlabList<pair<uint32_t, uint32_t>>> ls(lists);
-        sycl::buffer<sycl::global_ptr<SlabNode<pair<uint32_t, uint32_t>>>> its(1024);
+        sycl::buffer<sycl::global_ptr<SlabNode<pair<uint32_t, uint32_t>>>> its(3);
+        sycl::buffer<pair<uint32_t, uint32_t>> buffTestUniv(testUniv);
+        sycl::buffer<pair<bool, bool>> buffChecks(checks);
 
         q.submit([&](sycl::handler &cgh) {
-            //auto accok = sycl::accessor(ok, cgh, sycl::read_write);
             auto l = sycl::accessor(ls, cgh, sycl::read_write);
             auto itrs = sycl::accessor(its, cgh, sycl::read_write);
+            auto tests = sycl::accessor(buffTestUniv, cgh, sycl::read_only);
+            auto accChecks = sycl::accessor(buffChecks, cgh, sycl::write_only);
             sycl::stream out(100000, 1000, cgh);
 
             cgh.parallel_for(r, [=](sycl::nd_item<1> it) {
-                //sycl::global_ptr<SlabNode<pair<uint32_t, uint32_t>>> iter;
-                //out << it.get_group(). << ' ' << it.get_sub_group().get_local_id() << ' ' << it.get_local_id() << sycl::endl;
-                //if( it.get_global_id() == 5) out << it.get_group().get_id() << ' ' << it.get_local_id() << sycl::endl;
-                    Hasher<13, 24, 79> h;
-                    SlabHash<uint32_t, uint32_t, Hasher<13, 24, 79>> ht(EMPTY_UINT32_T, h, l.get_pointer(), it, itrs[it.get_group().get_id()], out);
+                size_t ind = it.get_group().get_id();
+                Hasher<13, 24, 343> h;
+                SlabHash<uint32_t, uint32_t, Hasher<13, 24, 343>> ht(EMPTY_UINT32_T, 
+                                                                    h, l.get_pointer(), it, 
+                                                                    itrs[it.get_group().get_id()], out);
 
-                    if(!ht.find(it.get_group().get_id()).second) {
-                        out << "ERROR" << sycl::endl;
-                    }
+                for (int i = ind * 2; i < ind * 2 + 2; i++) {
+                    auto ans = ht.find(tests[i].first);
+                    
+                    accChecks[i] = { ans.second, ans.first == tests[i].second };
+                }
             });
-            
-            //std::cout << *accok.get_pointer() << std::endl;
-                
-                //out << gr_ind << sycl::endl;
         }).wait();
-
     }
 
-    std::ofstream out("out.txt");
-    for(auto &e: lists) {
-        out << "LIST - ";
-        for(int i = 0; i < CLUSTER_SIZE; i++) {
-            out << (e.root + i) << " -- " ;
-            for(int j = 0; j < SLAB_SIZE; j++) {
-                out << ((*(e.root + i)).data[j].first) << ' ';
-            }
-            out << "\n       ";
-        }
-        out << '\n';
+    for(auto &e: checks) {
+        std::cout << e.first << ' ' << e.second << std::endl;
     }
-
-    std::cout << "cum" << std::endl;
 }

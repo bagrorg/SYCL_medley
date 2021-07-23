@@ -3,13 +3,13 @@
 #include <CL/sycl.hpp>
 #include <algorithm>
 
-#define SUBGROUP_SIZE 8
-#define CONST 1
+#define SUBGROUP_SIZE 16
+#define CONST 64
 #define SLAB_SIZE CONST * SUBGROUP_SIZE
 
 #define CLUSTER_SIZE 1024
 
-#define BUCKETS_COUNT 5
+#define BUCKETS_COUNT 128
 
 #define EMPTY_UINT32_T 4294967295
 
@@ -81,12 +81,12 @@ public:
                 find = ((_iter->data[i].first) == _empty);
                 //_out << "GR - " << _gr.get_id() << " ind " << ind << " " << find << sycl::endl;
                 //waiting for all items
-                if(key == 10) _out << "FIND - " << key << ' ' <<  ind << ' ' << find << sycl::endl;
-                if (key == 10 && !find) _out << "ELEM - " << key << ' ' << ind << ' ' << (_iter->data[i].first) << ' ' << _empty << sycl::endl;
+                //if(key == 10) _out << "FIND - " << key << ' ' <<  ind << ' ' << find << sycl::endl;
+                //if (key == 10 && !find) _out << "ELEM - " << key << ' ' << ind << ' ' << (_iter->data[i].first) << ' ' << _empty << sycl::endl;
                 sycl::group_barrier(_gr);
                 total_found = sycl::any_of_group(_gr, find);
                 //out << ind << ' ' << total_found << sycl::endl;
-                if(key == 10) _out << "TOTAL - " << key << ' ' <<  ind << ' ' << total_found << sycl::endl;
+                //if(key == 10) _out << "TOTAL - " << key << ' ' <<  ind << ' ' << total_found << sycl::endl;
                 //If some item found something
                 if (total_found) {
                     //if (ind == 0) _out << _gr.get_id() << sycl::endl;
@@ -97,7 +97,7 @@ public:
                         if (sycl::group_broadcast(_gr, find, j)) {
                             //item j sets it to ans
                             K tmp_empty = _empty;
-                            if(key == 10) _out << "TRY - " << key << ' ' <<  j << sycl::endl;
+                            //if(key == 10) _out << "TRY - " << key << ' ' <<  j << sycl::endl;
 
                             bool done = ind == j ? sycl::ONEAPI::atomic_ref<K, sycl::ONEAPI::memory_order::acq_rel,
                                                         sycl::ONEAPI::memory_scope::system,
@@ -105,7 +105,7 @@ public:
                                                             _iter->data[i].first
                                                         ).compare_exchange_strong(tmp_empty,
                                                                                     key) : false;
-                            if (key == 10) _out << "POSSIBLE SOOQA - " << _empty << ' ' << _iter->data[i].first << ' ' << sycl::endl;
+                            //if (key == 10) _out << "POSSIBLE SOOQA - " << _empty << ' ' << _iter->data[i].first << ' ' << sycl::endl;
                             if (done) {
                                 //out << "S - " << ind << sycl::endl;
                                 //_out << "GR - " << _gr.get_id() << ", ind -" << ind << ' ' << key << sycl::endl;
@@ -126,12 +126,12 @@ public:
                 break;
             }
             //0st item jumping to another node
-            if(key == 10)_out << "PREGO - " << key << ' ' << ind << sycl::endl;
+            //if(key == 10)_out << "PREGO - " << key << ' ' << ind << sycl::endl;
             if (ind == 0) {
                 if(key == 10)_out << "GO - " << key << sycl::endl;
                 _iter = _iter->next;
             }
-            if(key == 10)_out << "NOW - " << key << ' ' << ind << ' ' << _iter << sycl::endl;
+            //if(key == 10)_out << "NOW - " << key << ' ' << ind << ' ' << _iter << sycl::endl;
             //waiting for 0st item jump and all others
             sycl::group_barrier(_gr);
         }
@@ -142,12 +142,13 @@ public:
         //Index inside work-group (we have only one wg so it is equals to global id)
         auto ind = _it.get_local_id();
         
+        if (ind == 0) _iter = (_lists + _hasher(key))->root;
 
         //Flags
         bool find = false;          //Item found element with key similar to accKey
         bool total_found = false;   //Any of item found something
 
-        while (_iter != NULL) {
+        while (_iter != nullptr) {
             //                         FOR LOOP EXPLANATION
             //[. . . . . . . |. . . . . . . |. . . . . . . |. . . . . . . |...]
             //   ^          W_S                ^
